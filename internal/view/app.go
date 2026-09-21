@@ -24,7 +24,6 @@ var ErrHandledNavigation = errors.New("navigation already handled")
 var globalProfile string
 var globalRegion string
 
-// Entity contains ECS resources to show, use uppercase to make items like app.cluster easy to access
 type Entity struct {
 	cluster              *types.Cluster
 	service              *types.Service
@@ -45,81 +44,47 @@ type Entity struct {
 }
 
 type Option struct {
-	// Read only mode indicator
 	ReadOnly bool
-	// Reload resources every x second(s), -1 is stop auto refresh
 	Refresh int
-	// ECS exec shell
 	Shell string
-	// Here for help view
 	Debug bool
-	// Here for help view
 	JSON bool
-	// Here for help view
 	LogFile string
-	// Here for help view
 	ConfigFile string
-	// Here for help view
 	Theme string
-	// Default cluster name
 	Cluster string
-	// Default service name
 	Service string
-	// Splash screen on startup (load AWS config and first resource list in background).
 	Splash bool
-	// Execution mode for ECS containers: "ecs" or "ssm".
 	ExecMode string
-	// Custom command template for ECS container SSM sessions.
 	SsmCustomCommand string
 }
 
-// viewState holds sort/filter state per page so it can be restored after a reload.
 type viewState struct {
-	sortColumn int    // -1 = no active sort
-	sortOrder  string // "asc" or "desc"
+	sortColumn int
+	sortOrder string
 	filterText string
 }
 
-// tview App
 type App struct {
-	// tview Application
 	*tview.Application
-	// Info + table area pages UI for MainScreen
 	*tview.Pages
-	// Notice text UI in MainScreen footer
 	Notice *ui.Notice
-	// mainScreen content UI
 	mainScreen *tview.Flex
-	// API client
 	*api.Store
-	// Option from cli args
 	Option
-	// Current screen item content, use uppercase to make items like app.cluster easy to access
 	Entity
-	// Current page primary kind ex: cluster, service
 	kind kind
-	// Current secondary kind like json, list
 	secondaryKind kind
-	// Track back kind when necessary
 	backKind kind
-	// Port forwarding ssm session Id
 	sessions []*PortForwardingSession
-	// Current primary kind table row index for auto refresh to keep row selected
 	rowIndex int
-	// Specify in tview app suspend or not
 	isSuspended bool
-	// True while the filter input is open; auto refresh should not replace it.
 	filterInputActive bool
-	// Show selected status tasks
 	taskStatus types.DesiredStatus
-	// Show resources from cluster
 	fromCluster bool
-	// First paint after splash: avoid a second identical API list call.
 	bootstrapClusters []types.Cluster
 	bootstrapServices []types.Service
-	// Set when splash bootstrap fails before Run() returns; read after Run().
 	splashStartupErr error
-	// Persists sort/filter state per page across page reloads.
 	viewStates map[string]viewState
 }
 
@@ -145,94 +110,62 @@ func newApp(option Option) (*App, error) {
 		AddItem(footer, 1, 1, false)
 
 	return &App{
-		Application:   app,
-		Pages:         pages,
-		Notice:        notice,
-		mainScreen:    main,
-		Store:         store,
-		Option:        option,
-		kind:          ClusterKind,
+		Application: app,
+		Pages: pages,
+		Notice: notice,
+		mainScreen: main,
+		Store: store,
+		Option: option,
+		kind: ClusterKind,
 		secondaryKind: EmptyKind,
-		backKind:      EmptyKind,
-		taskStatus:    types.DesiredStatusRunning,
+		backKind: EmptyKind,
+		taskStatus: types.DesiredStatusRunning,
 		Entity: Entity{
-			cluster: &types.Cluster{
-				ClusterName: aws.String("e1s_default_cluster"),
-				ClusterArn:  aws.String("e1s_default_cluster_arn"),
-			},
-			service: &types.Service{
-				ServiceName: aws.String("e1s_default_service"),
-				ServiceArn:  aws.String("e1s_default_service arn"),
-			},
-			task:           &types.Task{},
-			container:      &types.Container{},
+			cluster: &types.Cluster{ClusterName: aws.String("e1s_default_cluster"), ClusterArn: aws.String("e1s_default_cluster_arn")},
+			service: &types.Service{ServiceName: aws.String("e1s_default_service"), ServiceArn: aws.String("e1s_default_service arn")},
+			task: &types.Task{},
+			container: &types.Container{},
 			taskDefinition: &types.TaskDefinition{},
 		},
 		viewStates: make(map[string]viewState),
 	}, nil
 }
 
-func (app *App) viewStateKey() string {
-	return app.kind.getAppPageName(app.getPageHandle())
-}
+func (app *App) viewStateKey() string { return app.kind.getAppPageName(app.getPageHandle()) }
+func (app *App) canAutoRefresh() bool { return app.secondaryKind == EmptyKind && !app.isSuspended && !app.filterInputActive }
 
-func (app *App) canAutoRefresh() bool {
-	return app.secondaryKind == EmptyKind && !app.isSuspended && !app.filterInputActive
-}
-
-// Entry point of the app
 func Start(option Option) error {
 	file := utils.GetLogger(option.LogFile, option.JSON, option.Debug)
 	defer file.Close()
-	slog.Debug(`
-****************************************************************
-**************** Started e1s
-****************************************************************`)
-	slog.Debug("e1s start", "option", option)
+	slog.Debug("\n****************************************************************\n**************** Started e1s\n****************************************************************")
 	theme = color.InitStyles(option.Theme)
 
 	app, err := newApp(option)
-	if err != nil {
-		return err
-	}
-
+	if err != nil { return err }
 	app.SetInputCapture(app.globalInputHandle)
 
 	if option.Splash {
 		app.SetRoot(app.buildSplashPage(), true)
 		go app.runSplashBootstrap()
-		if err := app.Application.Run(); err != nil {
-			return err
-		}
-		if app.splashStartupErr != nil {
-			return app.splashStartupErr
-		}
+		if err := app.Application.Run(); err != nil { return err }
+		if app.splashStartupErr != nil { return app.splashStartupErr }
 	} else {
-		if err := app.start(); err != nil {
-			return err
-		}
-		if err := app.Application.SetRoot(app.mainScreen, true).Run(); err != nil {
-			return err
-		}
+		if err := app.start(); err != nil { return err }
+		if err := app.Application.SetRoot(app.mainScreen, true).Run(); err != nil { return err }
 	}
 	app.onClose()
 	return nil
 }
 
-// Add new page to app.Pages
 func (app *App) addAppPage(page *tview.Flex) {
 	pageName := app.kind.getAppPageName(app.getPageHandle())
-
 	slog.Debug("app.Pages navigation", "action", "AppPage", "pageName", pageName, "app", app)
-
 	app.Pages.AddPage(pageName, page, true, true)
 }
 
-// Switch app.Pages page
 func (app *App) switchPage(reload bool) bool {
 	pageName := app.kind.getAppPageName(app.getPageHandle())
 	if app.Pages.HasPage(pageName) && app.Refresh < 0 && !reload {
-
 		slog.Debug("app.Pages navigation", "action", "SwitchToPage", "pageName", pageName, "app", app)
 		app.Pages.SwitchToPage(pageName)
 		return true
@@ -240,201 +173,97 @@ func (app *App) switchPage(reload bool) bool {
 	return false
 }
 
-// Go back page based on current kind
 func (app *App) back() {
 	slog.Debug("app.Pages back", "kind", app.kind)
 	app.taskStatus = types.DesiredStatusRunning
-
 	prevKind := app.kind.prevKind()
-	if app.backKind != EmptyKind {
-		prevKind = app.backKind
-		app.backKind = EmptyKind
-	}
-
-	if app.fromCluster && prevKind == ServiceKind {
-		app.fromCluster = false
-		prevKind = ClusterKind
-	}
-
+	if app.backKind != EmptyKind { prevKind = app.backKind; app.backKind = EmptyKind }
+	if app.fromCluster && prevKind == ServiceKind { app.fromCluster = false; prevKind = ClusterKind }
 	app.kind = prevKind
 	app.secondaryKind = EmptyKind
 	pageName := prevKind.getAppPageName(app.getPageHandle())
-
 	slog.Debug("app.Pages navigation", "action", "back", "pageName", pageName, "app", app)
-
 	if prevKind == ClusterKind && app.Option.Cluster != "" {
 		app.Option.Cluster = ""
-		err := app.showPrimaryKindPage(ClusterKind, false)
-		if err != nil {
-			app.Notice.Warn("failed to back to cluster list")
-		}
+		if err := app.showPrimaryKindPage(ClusterKind, false); err != nil { app.Notice.Warn("failed to back to cluster list") }
 		return
 	}
-
 	if prevKind == ServiceKind && app.Option.Service != "" {
 		app.Option.Service = ""
-		err := app.showPrimaryKindPage(ServiceKind, false)
-		if err != nil {
-			app.Notice.Warn("failed to back to service list")
-		}
+		if err := app.showPrimaryKindPage(ServiceKind, false); err != nil { app.Notice.Warn("failed to back to service list") }
 		return
 	}
-
 	app.Pages.SwitchToPage(pageName)
 }
 
-// Get page handler, cluster is empty, other is cluster arn
 func (app *App) getPageHandle() string {
 	name := ""
 	switch app.kind {
-	case ServiceKind:
-		name = *app.cluster.ClusterArn
-	case DaemonKind:
-		name = *app.cluster.ClusterArn
+	case ServiceKind, DaemonKind: name = *app.cluster.ClusterArn
 	case DaemonTaskDefinitionKind:
-		if app.daemonSummary != nil && app.daemonSummary.DaemonArn != nil {
-			name = *app.daemonSummary.DaemonArn
-		}
-	case TaskKind, TaskDefinitionKind, ServiceDeploymentKind:
-		name = *app.service.ServiceArn
-	case ContainerKind:
-		name = *app.task.TaskArn
+		if app.daemonSummary != nil && app.daemonSummary.DaemonArn != nil { name = *app.daemonSummary.DaemonArn }
+	case TaskKind, TaskDefinitionKind, ServiceDeploymentKind: name = *app.service.ServiceArn
+	case ContainerKind: name = *app.task.TaskArn
 	}
-	// based on different task status different name
-	if app.kind == TaskKind {
-		name = name + "." + strings.ToLower(string((app.taskStatus)))
-	}
-
-	// true when show tasks in cluster
-	if app.fromCluster {
-		name = name + ".cluster"
-	}
+	if app.kind == TaskKind { name += "." + strings.ToLower(string(app.taskStatus)) }
+	if app.fromCluster { name += ".cluster" }
 	return name
 }
 
 func (app *App) start() error {
 	var err error
-	if app.Option.Cluster == "" {
-		err = app.showPrimaryKindPage(ClusterKind, false)
-	} else {
+	if app.Option.Cluster == "" { err = app.showPrimaryKindPage(ClusterKind, false) } else {
 		app.cluster.ClusterName = &app.Option.Cluster
-		if app.Option.Service == "" {
-			err = app.showPrimaryKindPage(ServiceKind, false)
-		} else {
-			app.service.ServiceName = &app.Option.Service
-			err = app.showPrimaryKindPage(TaskKind, false)
-		}
+		if app.Option.Service == "" { err = app.showPrimaryKindPage(ServiceKind, false) } else { app.service.ServiceName = &app.Option.Service; err = app.showPrimaryKindPage(TaskKind, false) }
 	}
-
 	if app.Option.Refresh > 0 {
 		slog.Debug("Auto refresh rate", "seconds", app.Option.Refresh)
 		ticker := time.NewTicker(time.Duration(app.Option.Refresh) * time.Second)
-
-		go func() {
-			for {
-				<-ticker.C
-				if app.secondaryKind == EmptyKind && !app.isSuspended {
-					// tview is not thread-safe: UI updates must run on the main loop
-					app.QueueUpdateDraw(func() {
-						if !app.canAutoRefresh() {
-							slog.Debug("Auto refresh skipped")
-							return
-						}
-						if err := app.showPrimaryKindPage(app.kind, true); err != nil {
-							// showPrimaryKindPage already shows error in Notice
-						}
-						slog.Debug("Auto refresh")
-					})
-				}
-			}
-		}()
+		go func() { for { <-ticker.C; if app.secondaryKind == EmptyKind && !app.isSuspended { app.QueueUpdateDraw(func() { if !app.canAutoRefresh() { slog.Debug("Auto refresh skipped"); return }; _ = app.showPrimaryKindPage(app.kind, true); slog.Debug("Auto refresh") }) } } }()
 	}
 	return err
 }
 
-// Show Primary kind page
 func (app *App) showPrimaryKindPage(k kind, reload bool) error {
 	var err error
-	if k == TaskDefinitionKind || k == DaemonTaskDefinitionKind {
-		app.backKind = app.kind
-	}
+	if k == TaskDefinitionKind || k == DaemonTaskDefinitionKind { app.backKind = app.kind }
 	app.kind = k
 	switch k {
-	case ClusterKind:
-		err = app.showClustersPage(reload)
-	case InstanceKind:
-		err = app.showInstancesPage(reload)
-	case ServiceKind:
-		err = app.showServicesPage(reload)
-	case TaskKind:
-		err = app.showTasksPages(reload)
-	case ContainerKind:
-		err = app.showContainersPage(reload)
-	case TaskDefinitionKind:
-		err = app.showTaskDefinitionPage(reload)
-	case DaemonKind:
-		err = app.showDaemonsPage(reload)
-	case DaemonTaskDefinitionKind:
-		err = app.showDaemonTaskDefinitionPage(reload)
-	case ServiceDeploymentKind:
-		err = app.showServiceDeploymentPage(reload)
-	default:
-		app.kind = ClusterKind
-		err = app.showClustersPage(reload)
+	case ClusterKind: err = app.showClustersPage(reload)
+	case InstanceKind: err = app.showInstancesPage(reload)
+	case ServiceKind: err = app.showServicesPage(reload)
+	case TaskKind: err = app.showTasksPages(reload)
+	case ContainerKind: err = app.showContainersPage(reload)
+	case TaskDefinitionKind: err = app.showTaskDefinitionPage(reload)
+	case DaemonKind: err = app.showDaemonsPage(reload)
+	case DaemonTaskDefinitionKind: err = app.showDaemonTaskDefinitionPage(reload)
+	case ServiceDeploymentKind: err = app.showServiceDeploymentPage(reload)
+	default: app.kind = ClusterKind; err = app.showClustersPage(reload)
 	}
 	if err != nil {
-		if errors.Is(err, ErrHandledNavigation) {
-			// A valid page has already been shown (for example, fallback from empty
-			// clusters to regions), so skip noisy error notice.
-			return nil
-		}
+		if errors.Is(err, ErrHandledNavigation) { return nil }
 		slog.Error("failed to show primary kind page", "error", err)
 		app.Notice.Error(err.Error())
 		return err
 	}
-	if !reload {
-		if app.taskStatus != types.DesiredStatusStopped {
-			app.Notice.Infof("Viewing %s...", app.kind.String())
-		}
-	} else {
-		slog.Debug("Reload in showPrimaryKindPage")
-	}
+	if !reload { if app.taskStatus != types.DesiredStatusStopped { app.Notice.Infof("Viewing %s...", app.kind.String()) } } else { slog.Debug("Reload in showPrimaryKindPage") }
 	return nil
 }
 
-// E1s app close hook
 func (app *App) onClose() {
 	if len(app.sessions) != 0 {
 		ids := []*string{}
-		for _, s := range app.sessions {
-			ids = append(ids, s.sessionId)
-		}
-		err := app.Store.TerminateSessions(ids)
-		if err != nil {
-			slog.Error("Failed to terminated port forwarding sessions", "error", err)
-		} else {
-			slog.Debug("Terminated port forwarding session terminated")
-		}
+		for _, s := range app.sessions { ids = append(ids, s.sessionId) }
+		if err := app.Store.TerminateSessions(ids); err != nil { slog.Error("Failed to terminated port forwarding sessions", "error", err) } else { slog.Debug("Terminated port forwarding session terminated") }
 	}
-
-	slog.Debug(`
-**************** Exited e1s ************************************`)
+	slog.Debug("\n**************** Exited e1s ************************************")
 }
 
 func (app *App) globalInputHandle(event *tcell.EventKey) *tcell.EventKey {
 	if app.Store == nil {
-		switch event.Key() {
-		case tcell.KeyCtrlC:
-			return event
-		default:
-			return nil
-		}
+		switch event.Key() { case tcell.KeyCtrlC: return event; default: return nil }
 	}
-
-	switch event.Rune() {
-	case '?':
-		app.showHelpPage()
-	}
+	switch event.Rune() { case '?': app.showHelpPage() }
 
 	// Handle Ctrl+P for profile switcher
 	switch event.Key() {
@@ -444,30 +273,16 @@ func (app *App) globalInputHandle(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyCtrlR:
 		app.kind = RegionKind
 		app.showRegionsPage(false)
+		return nil
 	}
-
 	return event
 }
 
 func (app *App) LogValue() slog.Value {
-	return slog.AnyValue(struct {
-		kind          string
-		secondaryKind string
-		cluster       string
-		service       string
-	}{
-		kind:          app.kind.String(),
-		secondaryKind: app.secondaryKind.String(),
-		cluster:       *app.cluster.ClusterName,
-		service:       *app.service.ServiceName,
-	})
+	return slog.AnyValue(struct { kind string; secondaryKind string; cluster string; service string }{kind: app.kind.String(), secondaryKind: app.secondaryKind.String(), cluster: *app.cluster.ClusterName, service: *app.service.ServiceName})
 }
 
 func (app *App) copyToClipboard(item string, content string) {
-	err := clipboard.WriteAll(content)
-	if err != nil {
-		app.Notice.Error("Failed to copy to clipboard")
-	}
-
+	if err := clipboard.WriteAll(content); err != nil { app.Notice.Error("Failed to copy to clipboard") }
 	app.Notice.Info(fmt.Sprintf("Copied %s to clipboard", item))
 }
