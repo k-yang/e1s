@@ -270,6 +270,7 @@ func (app *App) globalInputHandle(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyCtrlP:
 		app.kind = ProfileKind
 		app.showProfilesPage(false)
+		return nil
 	case tcell.KeyCtrlR:
 		app.kind = RegionKind
 		app.showRegionsPage(false)
@@ -277,7 +278,6 @@ func (app *App) globalInputHandle(event *tcell.EventKey) *tcell.EventKey {
 	}
 	return event
 }
-
 func (app *App) LogValue() slog.Value {
 	return slog.AnyValue(struct { kind string; secondaryKind string; cluster string; service string }{kind: app.kind.String(), secondaryKind: app.secondaryKind.String(), cluster: *app.cluster.ClusterName, service: *app.service.ServiceName})
 }
